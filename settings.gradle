@@ -1,1 +1,1 @@
-rootProject.name = 'outboxer'
+rootProject.name = 'outboxer-postgres2rabbitmq'

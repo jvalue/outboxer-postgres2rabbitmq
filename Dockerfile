@@ -25,4 +25,4 @@ WORKDIR /app
 COPY --from=builder /builder/build/install/ .
 
 # Run app
-ENTRYPOINT ["./outboxer/bin/outboxer"]
+ENTRYPOINT ["./outboxer-postgres2rabbitmq/bin/outboxer-postgres2rabbitmq"]
