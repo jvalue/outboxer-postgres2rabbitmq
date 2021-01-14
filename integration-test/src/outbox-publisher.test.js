@@ -133,9 +133,7 @@ describe('Outboxer', () => {
     await DockerCompose('start outboxer')
     await sleep(RESTART_WAIT_TIME_MS)
 
-    // Event1 will be published again, because the first publication failed
     expect(receivedMessages).toEqual([
-      { eventId: event1Id, routingKey: event1routingKey, payload: event1payload },
       { eventId: event1Id, routingKey: event1routingKey, payload: event1payload },
       { eventId: event2Id, routingKey: event2routingKey, payload: event2payload },
     ])

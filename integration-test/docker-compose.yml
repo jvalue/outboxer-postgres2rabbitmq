@@ -22,7 +22,7 @@ services:
       - "15672:15672"
       - "5672:5672"
   outboxer:
-    image: outboxer
+    image: outboxer-postgres2rabbitmq
     build:
       context: ".."
     #volumes:
