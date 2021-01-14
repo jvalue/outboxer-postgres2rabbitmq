@@ -1,0 +1,41 @@
+name: Outboxer
+
+on:
+  push:
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Build docker image
+        run: docker build -t outboxer .
+      - name: Save Docker image as artifact
+        run: docker save outboxer > outboxer.tar
+      - name: Upload Docker image as artifact
+        uses: actions/upload-artifact@v1
+        with:
+          name: outboxer-artifact
+          path: outboxer.tar
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Download artifact
+        uses: actions/download-artifact@v1
+        with:
+          name: outboxer-artifact
+      - name: Load docker image from artifact
+        run: docker load -i ./outboxer-artifact/outboxer.tar
+      - name: Install dependencies
+        working-directory: ./integration-test
+        run: npm ci
+      - name: Execute test
+        working-directory: ./integration-test
+        run: npm run test
