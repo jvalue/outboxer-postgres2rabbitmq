@@ -2,6 +2,9 @@ name: Outboxer
 
 on:
   push:
+  pull_request:
+    branches:
+      - master
 
 jobs:
   build:
@@ -11,9 +14,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v2
       - name: Build docker image
-        run: docker build -t outboxer .
+        run: docker build -t outboxer-postgres2rabbitmq .
       - name: Save Docker image as artifact
-        run: docker save outboxer > outboxer.tar
+        run: docker save outboxer-postgres2rabbitmq > outboxer.tar
       - name: Upload Docker image as artifact
         uses: actions/upload-artifact@v1
         with:

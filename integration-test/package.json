@@ -6,15 +6,11 @@
     "test": "jest --colors --verbose --runInBand --detectOpenHandles"
   },
   "dependencies": {
-    "@jvalue/node-dry-amqp": "0.0.1",
+    "@jvalue/node-dry-basics": "0.0.3",
+    "amqplib": "0.6.0",
     "jest": "26.6.3",
     "pg": "8.5.1"
   },
-  "licenses": [
-    {
-      "type": "GNU General Public License 3",
-      "url": "https://opensource.org/licenses/GPL-3.0"
-    }
-  ],
+  "license": "MIT",
   "repository": "https://github.com/jvalue/outboxer-postgres2rabbitmq.git"
 }

@@ -29,6 +29,8 @@ class AmqpConsumer {
         return
       }
       msgHandler(msg)
+      // Ack all messages so they do not get redelivered after reconnect
+      this.channel.ack(msg)
     })
     this.consumerTag = consumeResponse.consumerTag;
   }
