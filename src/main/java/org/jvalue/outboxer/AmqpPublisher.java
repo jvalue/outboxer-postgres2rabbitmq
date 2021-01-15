@@ -32,13 +32,19 @@ import java.util.List;
 public class AmqpPublisher implements DebeziumEngine.ChangeConsumer<SourceRecord>, Closeable {
   private static final String AMQP_URL_CONFIG_NAME = "amqp.url";
   private static final String AMQP_EXCHANGE_CONFIG_NAME = "amqp.exchange";
+  private static final String AMQP_RETRIES_CONFIG_NAME = "amqp.retries";
+  private static final String AMQP_RETRY_DELAY_MS_CONFIG_NAME = "amqp.retry.delay.ms";
 
   private CachingConnectionFactory connectionFactory;
   private AmqpTemplate template;
   private String exchange;
+  private int retries;
+  private long retryDelayMs;
 
   public void init(Configuration config) {
     this.exchange = config.getString(AMQP_EXCHANGE_CONFIG_NAME);
+    this.retries = config.getInteger(AMQP_RETRIES_CONFIG_NAME);
+    this.retryDelayMs = config.getLong(AMQP_RETRY_DELAY_MS_CONFIG_NAME);
     this.connectionFactory = new CachingConnectionFactory(URI.create(config.getString(AMQP_URL_CONFIG_NAME)));
     this.template = new RabbitTemplate(connectionFactory);
   }
@@ -60,15 +66,27 @@ public class AmqpPublisher implements DebeziumEngine.ChangeConsumer<SourceRecord
     log.info("Publishing event {} with routingKey {}", eventId, routingKey);
 
     var message = createAmqpMessage(eventId, payload);
-    // If the message could not be send to amqp, it is important that always an exception is thrown.
-    // Otherwise the message will get marked as processed and in normal operation it would not be handled again.
-    // Because the order of the messages can not be guaranteed after a failed publication, normal operation
-    // is not possible anymore. Therefore we do not catch the AmqpException here and instead let it bubble up,
-    // so debezium can catch the exception and terminate. Once the operator has ensured that RabbitMQ is available
-    // again, the OutboxEventPublisher can be started again and will automatically reprocess the failed message,
-    // because the message has never been marked as processed.
-    // TODO: maybe add a retry
-    template.send(exchange, routingKey, message);
+
+    // If the message could not be send to amqp, a retry is performed after a delay. If the message could still
+    // not be published, it is important that debezium terminates. Otherwise messages can get out of order.
+    // Therefore we rethrow the AmqpException, if all retries have been failed. Debezium will catch the exception
+    // and terminate. Then the operator is responsible to resolve the issue and restart the outboxer service.
+    // Outboxer will then automatically reprocess the failed message, because it has never been marked as processed.
+    RuntimeException error = null;
+    for (int i = 0; i <= retries; i++) {
+      try {
+        template.send(exchange, routingKey, message);
+        break;
+      } catch (RuntimeException e) {
+        error = e;
+        try {
+          Thread.sleep(retryDelayMs);
+        } catch (InterruptedException ignore) {}
+      }
+    }
+    if (error != null) {
+      throw error;
+    }
   }
 
   private Message createAmqpMessage(String eventId, String payload) {

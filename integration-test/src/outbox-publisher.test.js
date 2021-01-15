@@ -6,11 +6,12 @@ const { AmqpConsumer } = require('./amqp-consumer')
 const { DockerCompose } = require('./docker-compose')
 const { OutboxDatabase } = require('./outbox-database')
 
-const TEST_TIMEOUT_MS = 60000
+const TEST_TIMEOUT_MS = 120000 // 2 minutes
 const STARTUP_WAIT_TIME_MS = 1000
 const PUBLICATION_WAIT_TIME_MS = 5000
+
 // debezium has a retry delay of 10 seconds (see retriable.restart.connector.wait.ms property)
-const RESTART_WAIT_TIME_MS = 10000
+const RESTART_WAIT_TIME_MS = 12000
 
 describe('Outboxer', () => {
   let outboxDatabase
@@ -105,7 +106,44 @@ describe('Outboxer', () => {
     ])
   }, TEST_TIMEOUT_MS)
 
-  test('does tolerate RabbitMQ restarts', async () => {
+  test('does tolerate RabbitMQ failure with manual restart', async () => {
+    const event1routingKey = 'datasource.create'
+    const event1payload = { id: 1, name: 'Test datasource' }
+
+    const event1Id = await outboxDatabase.insertEvent(event1routingKey, event1payload)
+
+    //Wait for publication
+    await sleep(PUBLICATION_WAIT_TIME_MS)
+
+    expect(receivedMessages).toEqual([{ eventId: event1Id, routingKey: event1routingKey, payload: event1payload }])
+
+    await amqpConsumer.stop() // close our amqp consumer because we are stopping RabbitMQ
+
+    await DockerCompose('stop rabbitmq')
+
+    // Publish an event
+    const event2routingKey = 'datasource.update'
+    const event2payload = { id: 1, name: 'Updated datasource'}
+    const event2Id = await outboxDatabase.insertEvent(event2routingKey, event2payload)
+
+    // Wait before restarting RabbitMQ so all retries of outboxer are failing
+    await sleep(25000)
+
+    await DockerCompose('start rabbitmq')
+    await sleep(RESTART_WAIT_TIME_MS)
+
+    amqpConsumer = await initAmqpConsumer()
+
+    await DockerCompose('start outboxer')
+    await sleep(RESTART_WAIT_TIME_MS)
+
+    expect(receivedMessages).toEqual([
+      { eventId: event1Id, routingKey: event1routingKey, payload: event1payload },
+      { eventId: event2Id, routingKey: event2routingKey, payload: event2payload },
+    ])
+  }, TEST_TIMEOUT_MS)
+
+  test('does tolerate RabbitMQ failure with retry', async () => {
     const event1routingKey = 'datasource.create'
     const event1payload = { id: 1, name: 'Test datasource' }
 
@@ -130,7 +168,7 @@ describe('Outboxer', () => {
 
     amqpConsumer = await initAmqpConsumer()
 
-    await DockerCompose('start outboxer')
+    // Wait so our amqpConsumer has time to consume all pending events
     await sleep(RESTART_WAIT_TIME_MS)
 
     expect(receivedMessages).toEqual([
