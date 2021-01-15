@@ -19,6 +19,8 @@ Outboxer can either be configured via a `outboxer.properties` file or via enviro
 - `table.include.list` The name of the outbox table
 - `publisher.amqp.url` The url to the AMQP broker
 - `publisher.amqp.exchange` The AMQP exchange on which the events should be published.
+- `publisher.amqp.retries` How often a failed event publication should be retried
+- `publisher.amqp.retry.delay` The delay before performing retry
 - `transforms.outbox.table.field.event.id` The name of the column containing the unique event id
 - `transforms.outbox.table.field.event.routing_key` The name of the column containing the event routing key
 - `transforms.outbox.table.field.event.payload` The name of the column containing the event payload
