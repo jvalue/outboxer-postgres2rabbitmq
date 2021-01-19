@@ -12,7 +12,7 @@ Outboxer can either be configured via a `outboxer.properties` file or via enviro
 
 - `database.hostname` The database host name
 - `database.port` The database port
-- `database.username` The database username
+- `database.user` The database username
 - `database.password` The database password
 - `database.dbname` The database name
 - `database.server.name` The unique name that identifies this debezium PostgreSQL connector
