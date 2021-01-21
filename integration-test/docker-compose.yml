@@ -30,7 +30,7 @@ services:
     environment:
       - OUTBOXER_DATABASE_HOSTNAME=database
       - OUTBOXER_DATABASE_PORT=5432
-      - OUTBOXER_DATABASE_USERNAME=outboxer
+      - OUTBOXER_DATABASE_USER=outboxer
       - OUTBOXER_DATABASE_PASSWORD=outboxer-pwd
       - OUTBOXER_DATABASE_DBNAME=outboxer
       - OUTBOXER_DATABASE_SERVER_NAME=outboxer

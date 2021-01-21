@@ -18,6 +18,11 @@ RUN gradle installDist
 #-------------------------------------------------------#
 FROM adoptopenjdk/openjdk15-openj9:alpine-slim
 
+# Add some OCI container image labels
+# See https://github.com/opencontainers/image-spec/blob/master/annotations.md#pre-defined-annotation-keys
+LABEL org.opencontainers.image.source="https://github.com/jvalue/outboxer-postgres2rabbitmq"
+LABEL org.opencontainers.image.licenses="MIT"
+
 RUN mkdir /app
 WORKDIR /app
 
