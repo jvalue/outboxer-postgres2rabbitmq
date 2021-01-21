@@ -6,7 +6,7 @@ const { AmqpConsumer } = require('./amqp-consumer')
 const { DockerCompose } = require('./docker-compose')
 const { OutboxDatabase } = require('./outbox-database')
 
-const TEST_TIMEOUT_MS = 120000 // 2 minutes
+const TEST_TIMEOUT_MS = 180000 // 3 minutes
 const STARTUP_WAIT_TIME_MS = 1000
 const PUBLICATION_WAIT_TIME_MS = 5000
 const OUTBOXER_RESTART_WAIT_TIME_MS = 5000
@@ -95,7 +95,27 @@ describe('Outboxer', () => {
     expect(receivedEvents).toEqual(insertedEvents)
   }, TEST_TIMEOUT_MS)
 
-  test('does tolerate database restart', async () => {
+  test('does tolerate database failure with manual restart', async () => {
+    await insertEvent('datasource.create', { id: 1, name: 'Test datasource' })
+    await sleep(PUBLICATION_WAIT_TIME_MS)
+    expect(receivedEvents).toEqual(insertedEvents)
+
+    //Restart database
+    await DockerCompose(`stop database`)
+    // debezium connector has a retry delay of 10 seconds (see retriable.restart.connector.wait.ms property).
+    // We use 20 seconds to be save that debezium has terminated
+    await sleep(20000)
+    await DockerCompose(`start database`)
+    await sleep(DATABASE_RESTART_WAIT_TIME_MS)
+    await DockerCompose(`start outboxer`)
+    await sleep(OUTBOXER_RESTART_WAIT_TIME_MS)
+
+    await insertEvent('datasource.update', { id: 1, name: 'Updated datasource' })
+    await sleep(PUBLICATION_WAIT_TIME_MS)
+    expect(receivedEvents).toEqual(insertedEvents)
+  }, TEST_TIMEOUT_MS)
+
+  test('does tolerate database failure with retry', async () => {
     await insertEvent('datasource.create', { id: 1, name: 'Test datasource' })
     await sleep(PUBLICATION_WAIT_TIME_MS)
     expect(receivedEvents).toEqual(insertedEvents)
