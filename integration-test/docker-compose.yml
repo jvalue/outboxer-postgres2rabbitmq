@@ -34,10 +34,17 @@ services:
       - OUTBOXER_DATABASE_PASSWORD=outboxer-pwd
       - OUTBOXER_DATABASE_DBNAME=outboxer
       - OUTBOXER_DATABASE_SERVER_NAME=outboxer
+      # Add heartbeat so outboxer fails faster in case of an database failure
+      - OUTBOXER_HEARTBEAT_INTERVAL_MS=60000
+      - OUTBOXER_HEARTBEAT_ACTION_QUERY=SELECT 1
+      # Configure AMQP connection
       - OUTBOXER_PUBLISHER_AMQP_URL=amqp://rabbit_adm:R4bb!7_4DM_p4SS@rabbitmq:5672
       - OUTBOXER_PUBLISHER_AMQP_EXCHANGE=ods_global
       - OUTBOXER_PUBLISHER_AMQP_RETRIES=5
       - OUTBOXER_PUBLISHER_AMQP_RETRY_DELAY_MS=5000
+      # only retry start once for test cases, so we have a more predictable behaviour
+      - OUTBOXER_START_RETRY_COUNT=1
+      - OUTBOXER_START_RETRY_DELAY_MS=2000
       #- OUTBOXER_OFFSET_STORAGE_FILE_FILENAME=/data/offset.dat
     depends_on:
       - database

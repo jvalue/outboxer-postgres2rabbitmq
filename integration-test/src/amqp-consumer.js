@@ -4,7 +4,12 @@ const { sleep } = require('@jvalue/node-dry-basics')
 const { AMQP_URL, AMQP_EXCHANGE, AMQP_QUEUE, AMQP_QUEUE_ROUTING_KEY, AMQP_CONNECTION_RETRIES, AMQP_CONNECTION_BACKOFF } = require('./env')
 
 class AmqpConsumer {
-  async init(msgHandler) {
+  constructor() {
+    this.consumers = []
+    this.messages = []
+  }
+
+  async init() {
     let lastError = undefined;
     for (let i = 0; i < AMQP_CONNECTION_RETRIES; i++) {
       try {
@@ -28,11 +33,27 @@ class AmqpConsumer {
       if (msg === null) {
         return
       }
-      msgHandler(msg)
+
+      if (this.consumers.length > 0) {
+        const consumer = this.consumers.shift()
+        consumer(msg)
+      } else {
+        this.messages.push(msg)
+      }
+
       // Ack all messages so they do not get redelivered after reconnect
       this.channel.ack(msg)
     })
     this.consumerTag = consumeResponse.consumerTag;
+  }
+
+  consumeOnce(consumer) {
+    if (this.messages.length > 0) {
+      const msg = this.messages.shift()
+      consumer(msg)
+    } else {
+      this.consumers.push(consumer)
+    }
   }
 
   async stop() {

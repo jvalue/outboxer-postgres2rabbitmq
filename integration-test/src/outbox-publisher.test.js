@@ -1,60 +1,68 @@
 const fs = require('fs');
 
 const { sleep } = require('@jvalue/node-dry-basics')
+const Docker = require('dockerode')
 
 const { AmqpConsumer } = require('./amqp-consumer')
 const { DockerCompose } = require('./docker-compose')
 const { OutboxDatabase } = require('./outbox-database')
 
-const TEST_TIMEOUT_MS = 180000 // 3 minutes
-const STARTUP_WAIT_TIME_MS = 1000
-const PUBLICATION_WAIT_TIME_MS = 5000
-const OUTBOXER_RESTART_WAIT_TIME_MS = 5000
-const RABBITMQ_RESTART_WAIT_TIME_MS = 5000
-// debezium connector has a retry delay of 10 seconds (see retriable.restart.connector.wait.ms property).
-// We use 20 seconds to be save that debezium connector has successfully reconnected
-const DATABASE_RESTART_WAIT_TIME_MS = 20000
+const TEST_TIMEOUT_MS = 300000 // 5 minutes
+
+function getComposeName(container) {
+  return container.Labels['com.docker.compose.service']
+}
 
 describe('Outboxer', () => {
   let outboxDatabase
   let amqpConsumer
-  let receivedEvents
-  let insertedEvents
+  let docker
 
-  async function initAmqpConsumer() {
-    const amqpConsumer = new AmqpConsumer()
-    await amqpConsumer.init(msg => {
-      const eventId = msg.properties.messageId
-      const routingKey = msg.fields.routingKey
-      const payload = JSON.parse(msg.content.toString())
-      receivedEvents.push({ eventId, routingKey, payload })
+  async function waitForContainers(containers = ['database', 'outboxer', 'rabbitmq'], retries = 20, retryDelay = 10000) {
+    for (let i = 0; i <= retries; i++) {
+      try {
+        const runningContainer = (await docker.listContainers()).map(getComposeName).sort()
+        expect(runningContainer).toEqual(containers)
+      } catch (error) {
+        if (i >= retries) {
+          throw error
+        }
+        await sleep(retryDelay)
+      }
+    }
+  }
+
+  async function expectEventDelivery(expectedEvent, timeoutMs = 60000) {
+    return new Promise((resolve, reject) => {
+      amqpConsumer.consumeOnce(msg => {
+        const eventId = msg.properties.messageId
+        const routingKey = msg.fields.routingKey
+        const payload = JSON.parse(msg.content.toString())
+        expect({ eventId, routingKey, payload }).toEqual(expectedEvent)
+        resolve()
+      })
+      setTimeout(() => reject(new Error(`Timout waiting for event: ${JSON.stringify(expectedEvent)}`)), timeoutMs)
     })
-    return amqpConsumer
   }
 
   async function insertEvent(routingKey, payload) {
     const eventId = await outboxDatabase.insertEvent(routingKey, payload)
-    insertedEvents.push({ eventId, routingKey, payload })
+    return { eventId, routingKey, payload }
   }
 
   beforeEach(async () => {
-    await DockerCompose('up -d rabbitmq database')
-    await sleep(STARTUP_WAIT_TIME_MS)
+    docker = new Docker({})
     await DockerCompose('up -d outboxer')
-    await sleep(STARTUP_WAIT_TIME_MS)
 
     outboxDatabase = new OutboxDatabase()
-    await outboxDatabase.init()
-
-    receivedEvents = []
-    insertedEvents = []
-    amqpConsumer = await initAmqpConsumer()
+    amqpConsumer = new AmqpConsumer()
+    await Promise.allSettled([outboxDatabase.init(), amqpConsumer.init()])
   }, TEST_TIMEOUT_MS)
 
   afterEach(async () => {
     try {
       const escapedTestName = expect.getState().currentTestName.split(' ').join('_')
-      const logs = await DockerCompose('logs --no-color')
+      const logs = await DockerCompose('logs --no-color outboxer')
       if (!fs.existsSync('logs')) {
         fs.mkdirSync('logs')
       }
@@ -75,108 +83,86 @@ describe('Outboxer', () => {
   }, TEST_TIMEOUT_MS)
 
   test('publishes event from outbox', async () => {
-    await insertEvent('datasource.create', { id: 1, name: 'Test datasource' })
-    await sleep(PUBLICATION_WAIT_TIME_MS)
-    expect(receivedEvents).toEqual(insertedEvents)
+    const insertedEvent = await insertEvent('datasource.create', { id: 1, name: 'Test datasource' })
+    await expectEventDelivery(insertedEvent)
   }, TEST_TIMEOUT_MS)
 
   test('does tolerate own restart', async () => {
-    await insertEvent('datasource.create', { id: 1, name: 'Test datasource' })
-    await sleep(PUBLICATION_WAIT_TIME_MS)
-    expect(receivedEvents).toEqual(insertedEvents)
+    const insertedEvent1 = await insertEvent('datasource.create', { id: 1, name: 'Test datasource' })
+    await expectEventDelivery(insertedEvent1)
 
     //Restart outboxer
     await DockerCompose(`stop outboxer`)
     await DockerCompose(`start outboxer`)
-    await sleep(OUTBOXER_RESTART_WAIT_TIME_MS)
 
-    await insertEvent('datasource.update', { id: 1, name: 'Updated datasource' })
-    await sleep(PUBLICATION_WAIT_TIME_MS)
-    expect(receivedEvents).toEqual(insertedEvents)
+    const insertedEvent2 = await insertEvent('datasource.update', { id: 1, name: 'Updated datasource' })
+    await expectEventDelivery(insertedEvent2)
   }, TEST_TIMEOUT_MS)
 
   test('does tolerate database failure with manual restart', async () => {
-    await insertEvent('datasource.create', { id: 1, name: 'Test datasource' })
-    await sleep(PUBLICATION_WAIT_TIME_MS)
-    expect(receivedEvents).toEqual(insertedEvents)
+    const insertedEvent1 = await insertEvent('datasource.create', { id: 1, name: 'Test datasource' })
+    await expectEventDelivery(insertedEvent1)
 
-    //Restart database
     await DockerCompose(`stop database`)
-    // debezium connector has a retry delay of 10 seconds (see retriable.restart.connector.wait.ms property).
-    // We use 20 seconds to be save that debezium has terminated
-    await sleep(20000)
-    await DockerCompose(`start database`)
-    await sleep(DATABASE_RESTART_WAIT_TIME_MS)
-    await DockerCompose(`start outboxer`)
-    await sleep(OUTBOXER_RESTART_WAIT_TIME_MS)
 
-    await insertEvent('datasource.update', { id: 1, name: 'Updated datasource' })
-    await sleep(PUBLICATION_WAIT_TIME_MS)
-    expect(receivedEvents).toEqual(insertedEvents)
+    // Wait till outboxer has terminated, because all retries are failing
+    await waitForContainers(['rabbitmq'])
+
+    await DockerCompose(`start database`)
+    await outboxDatabase.waitForConnection()
+    await DockerCompose(`start outboxer`)
+
+    const insertedEvent2 = await insertEvent('datasource.update', { id: 1, name: 'Updated datasource' })
+    await expectEventDelivery(insertedEvent2)
   }, TEST_TIMEOUT_MS)
 
   test('does tolerate database failure with retry', async () => {
-    await insertEvent('datasource.create', { id: 1, name: 'Test datasource' })
-    await sleep(PUBLICATION_WAIT_TIME_MS)
-    expect(receivedEvents).toEqual(insertedEvents)
+    const insertedEvent1 = await insertEvent('datasource.create', { id: 1, name: 'Test datasource' })
+    await expectEventDelivery(insertedEvent1)
 
     //Restart database
     await DockerCompose(`stop database`)
     await DockerCompose(`start database`)
-    await sleep(DATABASE_RESTART_WAIT_TIME_MS)
+    await outboxDatabase.waitForConnection()
 
-    await insertEvent('datasource.update', { id: 1, name: 'Updated datasource' })
-    await sleep(PUBLICATION_WAIT_TIME_MS)
-    expect(receivedEvents).toEqual(insertedEvents)
+    const insertedEvent2 = await insertEvent('datasource.update', { id: 1, name: 'Updated datasource' })
+    await expectEventDelivery(insertedEvent2)
   }, TEST_TIMEOUT_MS)
 
   test('does tolerate RabbitMQ failure with manual restart', async () => {
-    await insertEvent('datasource.create', { id: 1, name: 'Test datasource' })
-    await sleep(PUBLICATION_WAIT_TIME_MS)
-    expect(receivedEvents).toEqual(insertedEvents)
+    const insertedEvent1 = await insertEvent('datasource.create', { id: 1, name: 'Test datasource' })
+    await expectEventDelivery(insertedEvent1)
 
     await amqpConsumer.stop() // close our amqp consumer because we are stopping RabbitMQ
-
     await DockerCompose('stop rabbitmq')
 
     // Insert an event, that can not be published because RabbitMQ is down
-    await insertEvent('datasource.update', { id: 1, name: 'Updated datasource'})
+    const insertedEvent2 = await insertEvent('datasource.update', { id: 1, name: 'Updated datasource'})
 
-    // Wait before restarting RabbitMQ so all retries of outboxer are failing.
-    // Outboxer makes 5 retries with a delay of 5 seconds so we wait 30 seconds to be save
-    await sleep(30000)
+    // Wait till outboxer has terminated, because all retries are failing
+    await waitForContainers(['database'])
 
     await DockerCompose('start rabbitmq')
-    await sleep(RABBITMQ_RESTART_WAIT_TIME_MS)
-
-    amqpConsumer = await initAmqpConsumer()
+    await amqpConsumer.init()
 
     await DockerCompose('start outboxer')
-    await sleep(OUTBOXER_RESTART_WAIT_TIME_MS)
-
-    expect(receivedEvents).toEqual(insertedEvents)
+    await expectEventDelivery(insertedEvent2)
   }, TEST_TIMEOUT_MS)
 
   test('does tolerate RabbitMQ failure with retry', async () => {
-    await insertEvent('datasource.create', { id: 1, name: 'Test datasource' })
-    await sleep(PUBLICATION_WAIT_TIME_MS)
-    expect(receivedEvents).toEqual(insertedEvents)
+    const insertedEvent1 = await insertEvent('datasource.create', { id: 1, name: 'Test datasource' })
+    await expectEventDelivery(insertedEvent1)
 
     await amqpConsumer.stop() // close the test's amqp consumer because we are stopping RabbitMQ
-
     await DockerCompose('stop rabbitmq')
 
     // Insert an event, that can not be published because RabbitMQ is down
-    await insertEvent('datasource.update', { id: 1, name: 'Updated datasource'})
+    const insertedEvent2 = await insertEvent('datasource.update', { id: 1, name: 'Updated datasource'})
 
     await DockerCompose('start rabbitmq')
-    await sleep(RABBITMQ_RESTART_WAIT_TIME_MS)
+    await amqpConsumer.init()
 
-    // Start the test's amqpConsumer and wait so it has time to consume all pending events
-    amqpConsumer = await initAmqpConsumer()
-    await sleep(PUBLICATION_WAIT_TIME_MS)
-
-    expect(receivedEvents).toEqual(insertedEvents)
+    await expectEventDelivery(insertedEvent2)
   }, TEST_TIMEOUT_MS)
 
   test('publishes two events from one transaction', async () => {
@@ -185,11 +171,9 @@ describe('Outboxer', () => {
       ['entity.create', { id: 44 }],
     ])
 
-    await sleep(PUBLICATION_WAIT_TIME_MS)
-
-    expect(receivedEvents).toEqual([
-      { eventId: eventIds[0], routingKey: 'entity.create', payload: { id: 42 } },
-      { eventId: eventIds[1], routingKey: 'entity.create', payload: { id: 44 } },
+    await Promise.allSettled([
+      expectEventDelivery({ eventId: eventIds[0], routingKey: 'entity.create', payload: { id: 42 } }),
+      expectEventDelivery({ eventId: eventIds[1], routingKey: 'entity.create', payload: { id: 44 } })
     ])
   }, TEST_TIMEOUT_MS)
 })

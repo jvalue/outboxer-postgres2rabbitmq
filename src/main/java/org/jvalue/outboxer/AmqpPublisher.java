@@ -1,9 +1,12 @@
 package org.jvalue.outboxer;
 
 import io.debezium.config.Configuration;
+import io.debezium.embedded.StopConnectorException;
 import io.debezium.engine.DebeziumEngine;
+import io.debezium.engine.StopEngineException;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.connect.source.SourceRecord;
+import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.core.AmqpTemplate;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;
@@ -72,21 +75,20 @@ public class AmqpPublisher implements DebeziumEngine.ChangeConsumer<SourceRecord
     // Therefore we rethrow the AmqpException, if all retries have been failed. Debezium will catch the exception
     // and terminate. Then the operator is responsible to resolve the issue and restart the outboxer service.
     // Outboxer will then automatically reprocess the failed message, because it has never been marked as processed.
-    RuntimeException error = null;
     for (int i = 0; i <= retries; i++) {
       try {
         template.send(exchange, routingKey, message);
-        break;
+        return;
       } catch (RuntimeException e) {
-        error = e;
+        if (i >= retries) {
+          throw e;
+        }
         try {
           Thread.sleep(retryDelayMs);
         } catch (InterruptedException ignore) {}
       }
     }
-    if (error != null) {
-      throw error;
-    }
+    throw new AmqpException("Could publish event after " + retries + " retries");
   }
 
   private Message createAmqpMessage(String eventId, String payload) {
