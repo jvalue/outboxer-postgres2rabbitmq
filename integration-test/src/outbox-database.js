@@ -1,6 +1,7 @@
-const { Pool } = require('pg')
+const { PostgresClient } = require('@jvalue/node-dry-pg')
 
-const { POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USERNAME, POSTGRES_PASSWORD, POSTGRES_DATABASE, OUTBOX_TABLE_NAME} = require('./env')
+const { POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USERNAME, POSTGRES_PASSWORD, POSTGRES_DATABASE, OUTBOX_TABLE_NAME,
+  POSTGRES_CONNECTION_RETRIES, POSTGRES_CONNECTION_RETRY_DELAY } = require('./env')
 
 const POOL_CONFIG = {
   host: POSTGRES_HOST,
@@ -26,42 +27,37 @@ INSERT INTO "${OUTBOX_TABLE_NAME}"
 `
 
 class OutboxDatabase {
+  constructor() {
+    this.client = new PostgresClient(POOL_CONFIG)
+  }
+
   async init() {
-    this.pool = new Pool(POOL_CONFIG)
-    this.pool.on('error', (err) => console.log('Idle postgres connection errored:', err.message))
-    await this.pool.query(CREATE_OUTBOX_TABLE_SQL)
+    await this.client.waitForConnection(POSTGRES_CONNECTION_RETRIES, POSTGRES_CONNECTION_RETRY_DELAY)
+    await this.client.executeQuery(CREATE_OUTBOX_TABLE_SQL)
+  }
+
+  async waitForConnection() {
+    await this.client.waitForConnection(POSTGRES_CONNECTION_RETRIES, POSTGRES_CONNECTION_RETRY_DELAY)
   }
 
   async insertEvent(routingKey, payload) {
-    const { rows } = await this.pool.query(INSERT_INTO_OUTBOX_TABLE_SQL, [routingKey, payload])
+    const { rows } = await this.client.executeQuery(INSERT_INTO_OUTBOX_TABLE_SQL, [routingKey, payload])
     return rows[0].id;
   }
 
-  async insertEvents(rows) {
-    const response = await this.pool.query(this.buildInsertEventsStatement(rows))
-    return response.rows.map(r => r.id);
-  }
-
-  buildInsertEventsStatement(rows) {
-    const params = []
-    const chunks = []
-    for(let i = 0; i < rows.length; i++) {
-      const row = rows[i]
-      const valuesClause = []
-      params.push(row[0])
-      valuesClause.push('$' + params.length)
-      params.push(row[1])
-      valuesClause.push('$' + params.length)
-      chunks.push('(' + valuesClause.join(', ') + ')')
-    }
-    return {
-      text: `INSERT INTO "${OUTBOX_TABLE_NAME}" ("routing_key", "payload") VALUES ${chunks.join(', ')} RETURNING id`,
-      values: params
-    }
+  async insertEvents(events) {
+    return await this.client.transaction(async client => {
+      const eventIds = []
+      for (let i = 0; i < events.length; i++) {
+        const { rows } = await client.query(INSERT_INTO_OUTBOX_TABLE_SQL, events[i])
+        eventIds.push(rows[0].id);
+      }
+      return eventIds
+    })
   }
 
   async close() {
-    await this.pool.end()
+    await this.client.close()
   }
 }
 
