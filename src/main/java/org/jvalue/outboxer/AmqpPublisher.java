@@ -9,6 +9,7 @@ import org.apache.kafka.connect.source.SourceRecord;
 import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.core.AmqpTemplate;
 import org.springframework.amqp.core.Message;
+import org.springframework.amqp.core.MessageDeliveryMode;
 import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.connection.CachingConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -96,6 +97,8 @@ public class AmqpPublisher implements DebeziumEngine.ChangeConsumer<SourceRecord
     messageProps.setContentType(MessageProperties.CONTENT_TYPE_JSON);
     messageProps.setContentEncoding(StandardCharsets.UTF_8.name());
     messageProps.setMessageId(eventId);
+    // Persist message so it does survive RabbitMQ restarts
+    messageProps.setDeliveryMode(MessageDeliveryMode.PERSISTENT);
 
     return new Message(payload.getBytes(StandardCharsets.UTF_8), messageProps);
   }
